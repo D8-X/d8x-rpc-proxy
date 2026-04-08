@@ -10,9 +10,10 @@ RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -o /d8x-rpc-proxy ./cmd
 
-FROM scratch
+FROM alpine:latest
 
-COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+RUN apk add --no-cache ca-certificates
+
 COPY --from=builder /d8x-rpc-proxy /d8x-rpc-proxy
 
 EXPOSE 8080
