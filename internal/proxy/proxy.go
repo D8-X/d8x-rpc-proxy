@@ -74,3 +74,10 @@ func HandleHealth(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("ok"))
 }
+
+func (p *Proxy) Run(listenAddr string) error {
+	mux := http.NewServeMux()
+	p.RegisterRoutes(mux)
+	slog.Info("starting RPC proxy", "listen", listenAddr)
+	return http.ListenAndServe(listenAddr, mux)
+}

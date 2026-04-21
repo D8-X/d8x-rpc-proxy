@@ -3,7 +3,6 @@ package svc
 import (
 	"fmt"
 	"log/slog"
-	"net/http"
 	"os"
 	"strconv"
 
@@ -46,15 +45,9 @@ func Run(cfg Config) error {
 	if err != nil {
 		return fmt.Errorf("failed to initialize globalrpc: %w", err)
 	}
-
+	slog.Info("initialized globalrpc", "chainID", cfg.ChainID)
 	p := proxy.New(grpc)
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("/rpc", p.HandleRPC)
-	mux.HandleFunc("/health", proxy.HandleHealth)
-
-	slog.Info("starting RPC proxy", "listen", cfg.ListenAddr, "chainID", cfg.ChainID)
-	return http.ListenAndServe(cfg.ListenAddr, mux)
+	return p.Run(cfg.ListenAddr)
 }
 
 func envOr(key, fallback string) string {
