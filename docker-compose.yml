@@ -10,6 +10,7 @@ services:
       - REDIS_ADDR=${REDIS_ADDR}
       - REDIS_PASSWORD=${REDIS_PASSWORD}
       - LISTEN_ADDR=${LISTEN_ADDR}
+      - PRIVY_APP_ID=${PRIVY_APP_ID}
     volumes:
       - ./config/rpc-config.json:/config/rpc-config.json:ro
     depends_on:

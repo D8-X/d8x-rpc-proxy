@@ -3,30 +3,52 @@ package proxy
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 	"time"
 
+	"github.com/D8-X/d8x-rpc-proxy/internal/auth"
 	"github.com/D8-X/globalrpc"
 )
 
 type Proxy struct {
-	grpc   *globalrpc.GlobalRpc
-	client *http.Client
+	grpc      *globalrpc.GlobalRpc
+	client    *http.Client
+	privyAuth *auth.PrivyVerifier
 }
 
-func New(grpc *globalrpc.GlobalRpc) *Proxy {
-	return &Proxy{
-		grpc:   grpc,
-		client: &http.Client{Timeout: 30 * time.Second},
+func New(grpc *globalrpc.GlobalRpc, appID string) (*Proxy, error) {
+	p, err := auth.NewPrivyVerifier(appID)
+	if err != nil {
+		return nil, err
 	}
+	return &Proxy{
+		grpc:      grpc,
+		client:    &http.Client{Timeout: 30 * time.Second},
+		privyAuth: p,
+	}, nil
 }
 
 func (p *Proxy) HandleRPC(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
+	}
+
+	kind, token := auth.Classify(r.Header.Get("Authorization"))
+	switch kind {
+	case auth.AuthUser:
+		userID, err := p.privyAuth.Verify(token)
+		if err != nil {
+			writeJSONRPCError(w, r, err)
+			return
+		}
+		slog.Info("user authenticated", "userID", userID)
+	case auth.AuthNone:
+		slog.Info("user request without authentication attempt")
 	}
 
 	body, err := io.ReadAll(io.LimitReader(r.Body, 2<<20)) // 2 MiB limit
@@ -80,4 +102,50 @@ func (p *Proxy) Run(listenAddr string) error {
 	p.RegisterRoutes(mux)
 	slog.Info("starting RPC proxy", "listen", listenAddr)
 	return http.ListenAndServe(listenAddr, mux)
+}
+
+// writeJSONRPCError sends an error to the user of the form
+// {"jsonrpc":"2.0","error":{"code":-32001,"message":"authentication required"},"id":null}
+func writeJSONRPCError(w http.ResponseWriter, r *http.Request, err error) {
+	slog.Info("user authorization failed", "error", err)
+
+	var reqID json.RawMessage = []byte("null")
+	if r.Body != nil {
+		var req struct {
+			ID json.RawMessage `json:"id"`
+		}
+		if body, readErr := io.ReadAll(io.LimitReader(r.Body, 2<<20)); readErr == nil {
+			r.Body.Close()
+			if json.Unmarshal(body, &req) == nil && req.ID != nil {
+				reqID = req.ID
+			}
+		}
+	}
+
+	message := "authentication required"
+	if errors.Is(err, auth.ErrTokenExpired) {
+		message = "token expired"
+	}
+
+	resp := struct {
+		JSONRPC string `json:"jsonrpc"`
+		Error   struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+		ID json.RawMessage `json:"id"`
+	}{
+		JSONRPC: "2.0",
+		Error:   struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		}{Code: -32001, Message: message},
+		ID: reqID,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusUnauthorized)
+	if b, marshalErr := json.Marshal(resp); marshalErr == nil {
+		w.Write(b)
+	}
 }

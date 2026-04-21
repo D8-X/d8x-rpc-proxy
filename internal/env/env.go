@@ -6,4 +6,5 @@ const (
 	RedisAddr     = "REDIS_ADDR"
 	RedisPassword = "REDIS_PASSWORD"
 	ListenAddr    = "LISTEN_ADDR"
+	PrivyAppID    = "PRIVY_APP_ID"
 )
