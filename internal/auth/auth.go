@@ -36,6 +36,9 @@ type PrivyVerifier struct {
 // The library caches the last known-good JWKS — if Privy's endpoint is
 // unreachable, verification must continue using the cached keys, not fail.
 func NewPrivyVerifier(appID string) (*PrivyVerifier, error) {
+	if appID == "" {
+		return nil, fmt.Errorf("empty app id")
+	}
 	jwksURL := "https://auth.privy.io/api/v1/apps/" + appID + "/jwks.json"
 
 	override := keyfunc.Override{

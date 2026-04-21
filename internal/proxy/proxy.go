@@ -5,30 +5,39 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"time"
 
 	"github.com/D8-X/d8x-rpc-proxy/internal/auth"
+	"github.com/D8-X/d8x-rpc-proxy/internal/methodallowlist"
+	"github.com/D8-X/d8x-rpc-proxy/internal/ratelimit"
 	"github.com/D8-X/globalrpc"
 )
 
 type Proxy struct {
-	grpc      *globalrpc.GlobalRpc
-	client    *http.Client
-	privyAuth *auth.PrivyVerifier
+	grpc        *globalrpc.GlobalRpc
+	client      *http.Client
+	privyAuth   *auth.PrivyVerifier
+	rateLimiter *ratelimit.RateLimiter
 }
 
-func New(grpc *globalrpc.GlobalRpc, appID string) (*Proxy, error) {
+func New(grpc *globalrpc.GlobalRpc, appID string, rateLimit int, redisAddr, redisPw string) (*Proxy, error) {
 	p, err := auth.NewPrivyVerifier(appID)
 	if err != nil {
 		return nil, err
 	}
+	rl, err := ratelimit.NewRateLimiter(redisAddr, redisPw, rateLimit)
+	if err != nil {
+		return nil, fmt.Errorf("unable to create ratelimiter: %v", err)
+	}
 	return &Proxy{
-		grpc:      grpc,
-		client:    &http.Client{Timeout: 30 * time.Second},
-		privyAuth: p,
+		grpc:        grpc,
+		client:      &http.Client{Timeout: 30 * time.Second},
+		privyAuth:   p,
+		rateLimiter: rl,
 	}, nil
 }
 
@@ -37,13 +46,18 @@ func (p *Proxy) HandleRPC(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-
+	userID := "anon"
 	kind, token := auth.Classify(r.Header.Get("Authorization"))
 	switch kind {
 	case auth.AuthUser:
-		userID, err := p.privyAuth.Verify(token)
+		var err error
+		userID, err = p.privyAuth.Verify(token)
 		if err != nil {
-			writeJSONRPCError(w, r, err)
+			msg := "authentication required"
+			if errors.Is(err, auth.ErrTokenExpired) {
+				msg = "token expired"
+			}
+			writeJSONRPCError(w, r, http.StatusUnauthorized, msg)
 			return
 		}
 		slog.Info("user authenticated", "userID", userID)
@@ -58,8 +72,19 @@ func (p *Proxy) HandleRPC(w http.ResponseWriter, r *http.Request) {
 	}
 	defer r.Body.Close()
 
+	if !methodallowlist.Check(body) {
+		writeJSONRPCError(w, r, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
+
+	if !p.rateLimiter.Allow(ctx, userID) {
+		w.Header().Set("Retry-After", "60")
+		writeJSONRPCError(w, r, http.StatusTooManyRequests, "rate limit exceeded")
+		return
+	}
 
 	receipt, err := p.grpc.GetAndLockRpc(ctx, globalrpc.TypeHTTPS, 10)
 	if err != nil {
@@ -106,25 +131,18 @@ func (p *Proxy) Run(listenAddr string) error {
 
 // writeJSONRPCError sends an error to the user of the form
 // {"jsonrpc":"2.0","error":{"code":-32001,"message":"authentication required"},"id":null}
-func writeJSONRPCError(w http.ResponseWriter, r *http.Request, err error) {
-	slog.Info("user authorization failed", "error", err)
-
+func writeJSONRPCError(w http.ResponseWriter, r *http.Request, statusCode int, message string) {
 	var reqID json.RawMessage = []byte("null")
 	if r.Body != nil {
 		var req struct {
 			ID json.RawMessage `json:"id"`
 		}
 		if body, readErr := io.ReadAll(io.LimitReader(r.Body, 2<<20)); readErr == nil {
-			r.Body.Close()
+			_ = r.Body.Close()
 			if json.Unmarshal(body, &req) == nil && req.ID != nil {
 				reqID = req.ID
 			}
 		}
-	}
-
-	message := "authentication required"
-	if errors.Is(err, auth.ErrTokenExpired) {
-		message = "token expired"
 	}
 
 	resp := struct {
@@ -136,7 +154,7 @@ func writeJSONRPCError(w http.ResponseWriter, r *http.Request, err error) {
 		ID json.RawMessage `json:"id"`
 	}{
 		JSONRPC: "2.0",
-		Error:   struct {
+		Error: struct {
 			Code    int    `json:"code"`
 			Message string `json:"message"`
 		}{Code: -32001, Message: message},
@@ -144,8 +162,8 @@ func writeJSONRPCError(w http.ResponseWriter, r *http.Request, err error) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusUnauthorized)
+	w.WriteHeader(statusCode)
 	if b, marshalErr := json.Marshal(resp); marshalErr == nil {
-		w.Write(b)
+		_, _ = w.Write(b)
 	}
 }
