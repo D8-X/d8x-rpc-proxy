@@ -76,7 +76,7 @@ func Run(cfg Config) error {
 	if err != nil {
 		return fmt.Errorf("failed to initialize globalrpc: %w", err)
 	}
-	slog.Info("initialized globalrpc", "chainID", cfg.ChainID)
+	slog.Info("initialized globalrpc", "chainID", cfg.ChainID, "rateLimit", cfg.RateLimit, "enforceMode", cfg.Mode.String())
 	p, err := proxy.New(grpc,
 		cfg.PrivyAppID,
 		cfg.RateLimit,
