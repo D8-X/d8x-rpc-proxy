@@ -13,6 +13,7 @@ import (
 
 	"github.com/D8-X/d8x-rpc-proxy/internal/auth"
 	"github.com/D8-X/d8x-rpc-proxy/internal/methodallowlist"
+	"github.com/D8-X/d8x-rpc-proxy/internal/models"
 	"github.com/D8-X/d8x-rpc-proxy/internal/ratelimit"
 	"github.com/D8-X/globalrpc"
 )
@@ -22,9 +23,16 @@ type Proxy struct {
 	client      *http.Client
 	privyAuth   *auth.PrivyVerifier
 	rateLimiter *ratelimit.RateLimiter
+	enforceMode models.EnforceMode // log rate limits or enforce
 }
 
-func New(grpc *globalrpc.GlobalRpc, appID string, rateLimit int, redisAddr, redisPw string) (*Proxy, error) {
+func New(
+	grpc *globalrpc.GlobalRpc,
+	appID string,
+	rateLimit int,
+	redisAddr, redisPw string,
+	enforceMode models.EnforceMode,
+) (*Proxy, error) {
 	p, err := auth.NewPrivyVerifier(appID)
 	if err != nil {
 		return nil, err
@@ -38,6 +46,7 @@ func New(grpc *globalrpc.GlobalRpc, appID string, rateLimit int, redisAddr, redi
 		client:      &http.Client{Timeout: 30 * time.Second},
 		privyAuth:   p,
 		rateLimiter: rl,
+		enforceMode: enforceMode,
 	}, nil
 }
 
@@ -63,6 +72,10 @@ func (p *Proxy) HandleRPC(w http.ResponseWriter, r *http.Request) {
 		slog.Info("user authenticated", "userID", userID)
 	case auth.AuthNone:
 		slog.Info("user request without authentication attempt")
+		if p.enforceMode == models.Strict {
+			writeJSONRPCError(w, r, http.StatusUnauthorized, "no authorization provided")
+			return
+		}
 	}
 
 	body, err := io.ReadAll(io.LimitReader(r.Body, 2<<20)) // 2 MiB limit
@@ -81,9 +94,13 @@ func (p *Proxy) HandleRPC(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	if !p.rateLimiter.Allow(ctx, userID) {
-		w.Header().Set("Retry-After", "60")
-		writeJSONRPCError(w, r, http.StatusTooManyRequests, "rate limit exceeded")
-		return
+		if p.enforceMode == models.Strict {
+			w.Header().Set("Retry-After", "60")
+			writeJSONRPCError(w, r, http.StatusTooManyRequests, "rate limit exceeded")
+			return
+		} else {
+			slog.Info("rate limit exceeded (mode log)", "userID", userID)
+		}
 	}
 
 	receipt, err := p.grpc.GetAndLockRpc(ctx, globalrpc.TypeHTTPS, 10)

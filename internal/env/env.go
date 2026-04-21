@@ -7,4 +7,6 @@ const (
 	RedisPassword = "REDIS_PASSWORD"
 	ListenAddr    = "LISTEN_ADDR"
 	PrivyAppID    = "PRIVY_APP_ID"
+	EnforceMode   = "ENFORCE_MODE"
+	RateLimit     = "RATE_LIMIT"
 )
