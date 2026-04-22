@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/D8-X/d8x-rpc-proxy/internal/auth"
@@ -103,35 +104,124 @@ func (p *Proxy) HandleRPC(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	receipt, err := p.grpc.GetAndLockRpc(ctx, globalrpc.TypeHTTPS, 10)
-	if err != nil {
-		slog.Error("failed to get RPC endpoint", "err", err)
-		http.Error(w, "no RPC endpoint available", http.StatusServiceUnavailable)
+	tried := make(map[string]struct{})
+	poolSize := len(p.grpc.Config.Https)
+	maxAttempts := max(poolSize, 3)
+	var lastStatus int
+	var lastBody []byte
+	var lastUrl string
+
+	for attempts := 0; attempts < maxAttempts; {
+		if r.Context().Err() != nil {
+			http.Error(w, "client canceled", http.StatusServiceUnavailable)
+			return
+		}
+
+		getCtx, getCancel := context.WithTimeout(r.Context(), 10*time.Second)
+		_, cleanup, upstreamUrl, err := globalrpc.RpcDial(getCtx, p.grpc, globalrpc.TypeHTTPS)
+		getCancel()
+		if err != nil {
+			slog.Error("failed to get RPC endpoint", "attempt", attempts, "err", err)
+			if lastStatus != 0 {
+				respondWithLast(w, lastStatus, lastBody, tried)
+				return
+			}
+			http.Error(w, "no RPC endpoint available", http.StatusServiceUnavailable)
+			return
+		}
+
+		if _, seen := tried[upstreamUrl]; seen {
+			cleanup()
+			if poolSize > 0 && len(tried) >= poolSize {
+				break
+			}
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
+		tried[upstreamUrl] = struct{}{}
+		attempts++
+
+		status, respBody, retry := p.forward(r.Context(), upstreamUrl, body)
+		cleanup()
+
+		if !retry {
+			w.Header().Set("X-RPC-Upstream", upstreamUrl)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(status)
+			_, _ = w.Write(respBody)
+			return
+		}
+
+		slog.Warn("upstream returned retryable status, trying another",
+			"url", upstreamUrl, "status", status, "attempt", attempts)
+		lastStatus, lastBody, lastUrl = status, respBody, upstreamUrl
+
+		if attempts < maxAttempts {
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
+
+	slog.Error("all RPC upstreams exhausted",
+		"last_url", lastUrl,
+		"last_status", lastStatus,
+		"tried", triedList(tried))
+	respondWithLast(w, lastStatus, lastBody, tried)
+}
+
+func respondWithLast(w http.ResponseWriter, status int, body []byte, tried map[string]struct{}) {
+	w.Header().Set("X-RPC-Tried", triedList(tried))
+	w.Header().Set("Content-Type", "application/json")
+	if status == 0 {
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte(`{"error":"all upstream RPCs failed"}`))
 		return
 	}
-	defer p.grpc.ReturnLock(receipt)
-
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, receipt.Url, bytes.NewReader(body))
-	if err != nil {
-		slog.Error("failed to build upstream request", "err", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+	w.WriteHeader(status)
+	if len(body) == 0 {
+		_, _ = w.Write([]byte(`{"error":"all upstream RPCs failed"}`))
 		return
+	}
+	_, _ = w.Write(body)
+}
+
+func triedList(tried map[string]struct{}) string {
+	urls := make([]string, 0, len(tried))
+	for u := range tried {
+		urls = append(urls, u)
+	}
+	return strings.Join(urls, ",")
+}
+
+func (p *Proxy) forward(parent context.Context, url string, body []byte) (int, []byte, bool) {
+	req, err := http.NewRequestWithContext(parent, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return 0, []byte(`{"error":"internal error"}`), false
 	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := p.client.Do(req)
 	if err != nil {
-		slog.Error("upstream request failed", "url", receipt.Url, "err", err)
-		http.Error(w, "upstream error", http.StatusBadGateway)
-		return
+		slog.Error("upstream request failed", "url", url, "err", err)
+		return http.StatusBadGateway, []byte(`{"error":"upstream transport error"}`), true
 	}
 	defer resp.Body.Close()
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(resp.StatusCode)
-	if _, err := io.Copy(w, resp.Body); err != nil {
-		slog.Error("failed to write response", "err", err)
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	return resp.StatusCode, respBody, isRetryable(resp.StatusCode)
+}
+
+func isRetryable(status int) bool {
+	switch status {
+	case http.StatusTooManyRequests, // 429
+		http.StatusInternalServerError, // 500
+		http.StatusBadGateway,          // 502
+		http.StatusServiceUnavailable,  // 503 
+		http.StatusGatewayTimeout,      // 504
+		http.StatusNotFound:            // 404 under load 
+		return true
 	}
+	// not retryable ones like 403 or 401 
+	return false
 }
 
 func HandleHealth(w http.ResponseWriter, _ *http.Request) {
