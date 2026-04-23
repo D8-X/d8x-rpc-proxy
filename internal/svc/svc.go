@@ -5,7 +5,6 @@ import (
 	"log/slog"
 	"os"
 	"strconv"
-	"strings"
 
 	"github.com/D8-X/globalrpc"
 
@@ -26,15 +25,19 @@ type Config struct {
 }
 
 func ConfigFromEnv() (Config, error) {
-	envName := strings.ToLower(os.Getenv(env.Env))
-	isTest := envName == "test" || envName == "dev" || envName == "local"
+	// ENFORCE_MODE=0 -> log 
+	// Anything else (including unset) -> strict
 	mode := models.Strict
-	if isTest {
-		slog.Info("ENV=test/dev/local detected, enabling 'log' mode")
-		mode = models.Log
-	} else {
-		slog.Info("PROD")
+	if m := os.Getenv(env.EnforceMode); m != "" {
+		mi, err := strconv.Atoi(m)
+		if err != nil || mi < 0 || mi > 1 {
+			slog.Warn("invalid ENFORCE_MODE, defaulting to strict", "value", m)
+		} else if mi == 0 {
+			mode = models.Log
+		}
 	}
+	slog.Info("proxy mode", "mode", mode.String())
+	isLog := mode == models.Log
 
 	chainIDStr := os.Getenv(env.ChainID)
 	if chainIDStr == "" {
@@ -46,8 +49,8 @@ func ConfigFromEnv() (Config, error) {
 	}
 
 	appID := os.Getenv(env.PrivyAppID)
-	if !isTest && appID == "" {
-		return Config{}, fmt.Errorf("%s is required in prod", env.PrivyAppID)
+	if !isLog && appID == "" {
+		return Config{}, fmt.Errorf("%s is required when ENFORCE_MODE is strict", env.PrivyAppID)
 	}
 
 	rli := 0
@@ -56,8 +59,11 @@ func ConfigFromEnv() (Config, error) {
 		if err != nil {
 			return Config{}, fmt.Errorf("invalid %s: %s", env.RateLimit, rl)
 		}
-	} else if !isTest {
-		return Config{}, fmt.Errorf("%s is required in prod", env.RateLimit)
+		if !isLog && rli <= 10 {
+			return Config{}, fmt.Errorf("%s must be > 10 when ENFORCE_MODE is strict, got %d", env.RateLimit, rli)
+		}
+	} else if !isLog {
+		return Config{}, fmt.Errorf("%s is required when ENFORCE_MODE is strict", env.RateLimit)
 	}
 
 	cfg := Config{
