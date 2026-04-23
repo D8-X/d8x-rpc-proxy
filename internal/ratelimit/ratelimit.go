@@ -32,9 +32,11 @@ func NewRateLimiter(redisAddr, redisPw string, limit int) (*RateLimiter, error) 
 	return &rl, nil
 }
 
-// Allow checks the rate limit for id
-func (rl *RateLimiter) Allow(ctx context.Context, id string) bool {
-	minute := time.Now().Unix() / 60
+
+func (rl *RateLimiter) Allow(ctx context.Context, id string) (bool, int, int64) {
+	now := time.Now().Unix()
+	minute := now / 60
+	resetUnix := (minute + 1) * 60
 	key := fmt.Sprintf("rl:%s:%d", id, minute)
 	results := rl.ruedi.DoMulti(ctx,
 		rl.ruedi.B().Incr().Key(key).Build(),
@@ -43,10 +45,13 @@ func (rl *RateLimiter) Allow(ctx context.Context, id string) bool {
 	count, err := results[0].AsInt64()
 	if err != nil {
 		slog.Error("Allow ratelimit failed: redis error", "error", err)
-		return true
+		return true, rl.limit, resetUnix
 	}
 	if err := results[1].Error(); err != nil {
 		slog.Error("Allow ratelimit: expire", "id", id, "error", err)
 	}
-	return count <= int64(rl.limit)
+	remaining := max(rl.limit - int(count), 0)
+	return count <= int64(rl.limit), remaining, resetUnix
 }
+
+func (rl *RateLimiter) Limit() int { return rl.limit }
