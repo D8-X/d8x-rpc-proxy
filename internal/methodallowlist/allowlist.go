@@ -6,22 +6,22 @@ import (
 )
 
 var allowed = map[string]struct{}{
-	"eth_chainId":              {},
-	"eth_blockNumber":          {},
-	"eth_call":                 {},
-	"eth_estimateGas":          {},
-	"eth_gasPrice":             {},
-	"eth_getBalance":           {},
-	"eth_getTransactionCount":  {},
+	"eth_chainId":               {},
+	"eth_blockNumber":           {},
+	"eth_call":                  {},
+	"eth_estimateGas":           {},
+	"eth_gasPrice":              {},
+	"eth_getBalance":            {},
+	"eth_getTransactionCount":   {},
 	"eth_getTransactionReceipt": {},
-	"eth_getTransactionByHash": {},
-	"eth_getBlockByNumber":     {},
-	"eth_getBlockByHash":       {},
-	"eth_sendRawTransaction":   {},
-	"net_version":              {},
-	"web3_clientVersion":       {},
-	"eth_maxPriorityFeePerGas": {},
-	"eth_feeHistory":           {},
+	"eth_getTransactionByHash":  {},
+	"eth_getBlockByNumber":      {},
+	"eth_getBlockByHash":        {},
+	"eth_sendRawTransaction":    {},
+	"net_version":               {},
+	"web3_clientVersion":        {},
+	"eth_maxPriorityFeePerGas":  {},
+	"eth_feeHistory":            {},
 }
 
 // Check returns true if all methods in body are on the allowlist.
