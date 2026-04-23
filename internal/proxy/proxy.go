@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -120,13 +121,19 @@ func (p *Proxy) HandleRPC(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	if p.rateLimiter != nil && !p.rateLimiter.Allow(ctx, userID) {
-		if p.enforceMode == models.Strict {
-			w.Header().Set("Retry-After", "60")
-			writeJSONRPCError(w, r, body, http.StatusTooManyRequests, JsonRpcErrRateLimit, "rate limit exceeded")
-			return
-		} else {
-			slog.Info("[log mode] rate limit exceeded", "userID", userID)
+	if p.rateLimiter != nil {
+		allowed, remaining, resetUnix := p.rateLimiter.Allow(ctx, userID)
+		w.Header().Set("X-RateLimit-Limit", strconv.Itoa(p.rateLimiter.Limit()))
+		w.Header().Set("X-RateLimit-Remaining", strconv.Itoa(remaining))
+		w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(resetUnix, 10))
+		if !allowed {
+			if p.enforceMode == models.Strict {
+				retryAfter := max(resetUnix - time.Now().Unix(), 1)
+				w.Header().Set("Retry-After", strconv.FormatInt(retryAfter, 10))
+				writeJSONRPCError(w, r, body, http.StatusTooManyRequests, JsonRpcErrRateLimit, "rate limit exceeded")
+				return
+			}
+			slog.Info("rate limit exceeded", "userID", userID, "remaining", remaining)
 		}
 	}
 
