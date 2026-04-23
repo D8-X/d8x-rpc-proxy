@@ -25,8 +25,6 @@ type Config struct {
 }
 
 func ConfigFromEnv() (Config, error) {
-	// ENFORCE_MODE=0 -> log 
-	// Anything else (including unset) -> strict
 	mode := models.Strict
 	if m := os.Getenv(env.EnforceMode); m != "" {
 		mi, err := strconv.Atoi(m)
