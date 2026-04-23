@@ -25,6 +25,18 @@ type Config struct {
 }
 
 func ConfigFromEnv() (Config, error) {
+	mode := models.Strict
+	if m := os.Getenv(env.EnforceMode); m != "" {
+		mi, err := strconv.Atoi(m)
+		if err != nil || mi < 0 || mi > 1 {
+			slog.Warn("invalid ENFORCE_MODE, defaulting to strict", "value", m)
+		} else if mi == 0 {
+			mode = models.Log
+		}
+	}
+	slog.Info("proxy mode", "mode", mode.String())
+	isLog := mode == models.Log
+
 	chainIDStr := os.Getenv(env.ChainID)
 	if chainIDStr == "" {
 		return Config{}, fmt.Errorf("%s is required", env.ChainID)
@@ -33,31 +45,25 @@ func ConfigFromEnv() (Config, error) {
 	if err != nil {
 		return Config{}, fmt.Errorf("%s must be an integer: %w", env.ChainID, err)
 	}
+
 	appID := os.Getenv(env.PrivyAppID)
-	if appID == "" {
-		return Config{}, fmt.Errorf("%s is required", env.PrivyAppID)
+	if !isLog && appID == "" {
+		return Config{}, fmt.Errorf("%s is required when ENFORCE_MODE is strict", env.PrivyAppID)
 	}
-	rl := os.Getenv(env.RateLimit)
-	if rl == "" {
-		return Config{}, fmt.Errorf("%s is required", env.RateLimit)
-	}
-	rli, err := strconv.Atoi(rl)
-	if err != nil {
-		return Config{}, fmt.Errorf("invalid %s: %s", env.RateLimit, rl)
-	}
-	mode := models.Strict
-	m := os.Getenv(env.EnforceMode)
-	if m == "" {
-		slog.Info("no enforce mode provided, enabling 'strict'")
-	} else {
-		mi, err := strconv.Atoi(m)
-		if err != nil || mi > 1 || mi < 0 {
-			slog.Info("invalid enforce mode provided, enabling 'strict'", "provided", m)
-			mode = models.Strict
-		} else {
-			mode = models.EnforceMode(mi)
+
+	rli := 0
+	if rl := os.Getenv(env.RateLimit); rl != "" {
+		rli, err = strconv.Atoi(rl)
+		if err != nil {
+			return Config{}, fmt.Errorf("invalid %s: %s", env.RateLimit, rl)
 		}
+		if !isLog && rli <= 10 {
+			return Config{}, fmt.Errorf("%s must be > 10 when ENFORCE_MODE is strict, got %d", env.RateLimit, rli)
+		}
+	} else if !isLog {
+		return Config{}, fmt.Errorf("%s is required when ENFORCE_MODE is strict", env.RateLimit)
 	}
+
 	cfg := Config{
 		ConfigFile:    envOr(env.RPCConfigFile, "rpc-config.json"),
 		RedisAddr:     envOr(env.RedisAddr, "localhost:6379"),
