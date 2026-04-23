@@ -111,7 +111,7 @@ func (p *Proxy) HandleRPC(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to read request body", http.StatusBadRequest)
 		return
 	}
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 
 	if !methodallowlist.Check(body) {
 		writeJSONRPCError(w, r, body, http.StatusMethodNotAllowed, JsonRpcErrMethodBlocked, "method not allowed")
@@ -128,7 +128,7 @@ func (p *Proxy) HandleRPC(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(resetUnix, 10))
 		if !allowed {
 			if p.enforceMode == models.Strict {
-				retryAfter := max(resetUnix - time.Now().Unix(), 1)
+				retryAfter := max(resetUnix-time.Now().Unix(), 1)
 				w.Header().Set("Retry-After", strconv.FormatInt(retryAfter, 10))
 				writeJSONRPCError(w, r, body, http.StatusTooManyRequests, JsonRpcErrRateLimit, "rate limit exceeded")
 				return
@@ -237,7 +237,7 @@ func (p *Proxy) forward(parent context.Context, url string, body []byte) (int, [
 		slog.Error("upstream request failed", "url", url, "err", err)
 		return http.StatusBadGateway, []byte(`{"error":"upstream transport error"}`), true
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	return resp.StatusCode, respBody, isRetryable(resp.StatusCode)
@@ -259,7 +259,7 @@ func isRetryable(status int) bool {
 
 func HandleHealth(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("ok"))
+	_, _ = w.Write([]byte("ok"))
 }
 
 func (p *Proxy) Run(listenAddr string) error {
