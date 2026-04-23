@@ -93,14 +93,14 @@ func (p *Proxy) HandleRPC(w http.ResponseWriter, r *http.Request) {
 			if errors.Is(err, auth.ErrTokenExpired) {
 				msg = "token expired"
 			}
-			writeJSONRPCError(w, r, nil, http.StatusUnauthorized, msg)
+			writeJSONRPCError(w, r, nil, http.StatusUnauthorized, JsonRpcErrUnauthorized, msg)
 			return
 		}
 		slog.Info("user authenticated", "userID", userID)
 	case auth.AuthNone:
 		slog.Info("user request without authentication attempt")
 		if p.enforceMode == models.Strict {
-			writeJSONRPCError(w, r, nil, http.StatusUnauthorized, "no authorization provided")
+			writeJSONRPCError(w, r, nil, http.StatusUnauthorized, JsonRpcErrUnauthorized, "no authorization provided")
 			return
 		}
 	}
@@ -113,7 +113,7 @@ func (p *Proxy) HandleRPC(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
 
 	if !methodallowlist.Check(body) {
-		writeJSONRPCError(w, r, body, http.StatusMethodNotAllowed, "method not allowed")
+		writeJSONRPCError(w, r, body, http.StatusMethodNotAllowed, JsonRpcErrMethodBlocked, "method not allowed")
 		return
 	}
 
@@ -123,7 +123,7 @@ func (p *Proxy) HandleRPC(w http.ResponseWriter, r *http.Request) {
 	if p.rateLimiter != nil && !p.rateLimiter.Allow(ctx, userID) {
 		if p.enforceMode == models.Strict {
 			w.Header().Set("Retry-After", "60")
-			writeJSONRPCError(w, r, body, http.StatusTooManyRequests, "rate limit exceeded")
+			writeJSONRPCError(w, r, body, http.StatusTooManyRequests, JsonRpcErrRateLimit, "rate limit exceeded")
 			return
 		} else {
 			slog.Info("[log mode] rate limit exceeded", "userID", userID)
@@ -262,13 +262,12 @@ func (p *Proxy) Run(listenAddr string) error {
 	return http.ListenAndServe(listenAddr, mux)
 }
 
-// writeJSONRPCError sends an error to the user of the form
-// {"jsonrpc":"2.0","error":{"code":-32001,"message":"authentication required"},"id":null}
 func writeJSONRPCError(
 	w http.ResponseWriter,
 	r *http.Request,
 	readBody []byte,
-	statusCode int,
+	httpStatus int,
+	rpcCode int,
 	message string,
 ) {
 	var reqID json.RawMessage = []byte("null")
@@ -300,12 +299,12 @@ func writeJSONRPCError(
 		Error: struct {
 			Code    int    `json:"code"`
 			Message string `json:"message"`
-		}{Code: -32001, Message: message},
+		}{Code: rpcCode, Message: message},
 		ID: reqID,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(statusCode)
+	w.WriteHeader(httpStatus)
 	if b, marshalErr := json.Marshal(resp); marshalErr == nil {
 		_, _ = w.Write(b)
 	}
