@@ -32,7 +32,6 @@ func NewRateLimiter(redisAddr, redisPw string, limit int) (*RateLimiter, error) 
 	return &rl, nil
 }
 
-
 func (rl *RateLimiter) Allow(ctx context.Context, id string) (bool, int, int64) {
 	now := time.Now().Unix()
 	minute := now / 60
@@ -50,7 +49,7 @@ func (rl *RateLimiter) Allow(ctx context.Context, id string) (bool, int, int64) 
 	if err := results[1].Error(); err != nil {
 		slog.Error("Allow ratelimit: expire", "id", id, "error", err)
 	}
-	remaining := max(rl.limit - int(count), 0)
+	remaining := max(rl.limit-int(count), 0)
 	return count <= int64(rl.limit), remaining, resetUnix
 }
 
