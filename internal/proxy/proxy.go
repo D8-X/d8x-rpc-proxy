@@ -34,18 +34,40 @@ func New(
 	redisAddr, redisPw string,
 	enforceMode models.EnforceMode,
 ) (*Proxy, error) {
-	p, err := auth.NewPrivyVerifier(appID)
-	if err != nil {
-		return nil, err
-	}
-	rl, err := ratelimit.NewRateLimiter(redisAddr, redisPw, rateLimit)
-	if err != nil {
-		return nil, fmt.Errorf("unable to create ratelimiter: %v", err)
+	var (
+		pv  *auth.PrivyVerifier
+		rl  *ratelimit.RateLimiter
+		err error
+	)
+	if enforceMode == models.Strict {
+		pv, err = auth.NewPrivyVerifier(appID)
+		if err != nil {
+			return nil, err
+		}
+		rl, err = ratelimit.NewRateLimiter(redisAddr, redisPw, rateLimit)
+		if err != nil {
+			return nil, fmt.Errorf("unable to create ratelimiter: %v", err)
+		}
+	} else {
+		if appID != "" {
+			if v, e := auth.NewPrivyVerifier(appID); e == nil {
+				pv = v
+			} else {
+				slog.Warn("[log mode] PrivyVerifier init failed, disabled", "err", e)
+			}
+		}
+		if rateLimit > 10 {
+			if v, e := ratelimit.NewRateLimiter(redisAddr, redisPw, rateLimit); e == nil {
+				rl = v
+			} else {
+				slog.Warn("[log mode] RateLimiter init failed, disabled", "err", e)
+			}
+		}
 	}
 	return &Proxy{
 		grpc:        grpc,
 		client:      &http.Client{Timeout: 30 * time.Second},
-		privyAuth:   p,
+		privyAuth:   pv,
 		rateLimiter: rl,
 		enforceMode: enforceMode,
 	}, nil
@@ -60,6 +82,10 @@ func (p *Proxy) HandleRPC(w http.ResponseWriter, r *http.Request) {
 	kind, token := auth.Classify(r.Header.Get("Authorization"))
 	switch kind {
 	case auth.AuthUser:
+		if p.privyAuth == nil {
+			slog.Info("[log mode] privy disabled, treating as anon", "token", "redacted")
+			break
+		}
 		var err error
 		userID, err = p.privyAuth.Verify(token)
 		if err != nil {
@@ -67,14 +93,14 @@ func (p *Proxy) HandleRPC(w http.ResponseWriter, r *http.Request) {
 			if errors.Is(err, auth.ErrTokenExpired) {
 				msg = "token expired"
 			}
-			writeJSONRPCError(w, r, http.StatusUnauthorized, msg)
+			writeJSONRPCError(w, r, nil, http.StatusUnauthorized, msg)
 			return
 		}
 		slog.Info("user authenticated", "userID", userID)
 	case auth.AuthNone:
 		slog.Info("user request without authentication attempt")
 		if p.enforceMode == models.Strict {
-			writeJSONRPCError(w, r, http.StatusUnauthorized, "no authorization provided")
+			writeJSONRPCError(w, r, nil, http.StatusUnauthorized, "no authorization provided")
 			return
 		}
 	}
@@ -87,20 +113,20 @@ func (p *Proxy) HandleRPC(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
 
 	if !methodallowlist.Check(body) {
-		writeJSONRPCError(w, r, http.StatusMethodNotAllowed, "method not allowed")
+		writeJSONRPCError(w, r, body, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	if !p.rateLimiter.Allow(ctx, userID) {
+	if p.rateLimiter != nil && !p.rateLimiter.Allow(ctx, userID) {
 		if p.enforceMode == models.Strict {
 			w.Header().Set("Retry-After", "60")
-			writeJSONRPCError(w, r, http.StatusTooManyRequests, "rate limit exceeded")
+			writeJSONRPCError(w, r, body, http.StatusTooManyRequests, "rate limit exceeded")
 			return
 		} else {
-			slog.Info("rate limit exceeded (mode log)", "userID", userID)
+			slog.Info("[log mode] rate limit exceeded", "userID", userID)
 		}
 	}
 
@@ -215,12 +241,12 @@ func isRetryable(status int) bool {
 	case http.StatusTooManyRequests, // 429
 		http.StatusInternalServerError, // 500
 		http.StatusBadGateway,          // 502
-		http.StatusServiceUnavailable,  // 503 
+		http.StatusServiceUnavailable,  // 503
 		http.StatusGatewayTimeout,      // 504
-		http.StatusNotFound:            // 404 under load 
+		http.StatusNotFound:            // 404 under load
 		return true
 	}
-	// not retryable ones like 403 or 401 
+	// not retryable ones like 403 or 401
 	return false
 }
 
@@ -238,17 +264,27 @@ func (p *Proxy) Run(listenAddr string) error {
 
 // writeJSONRPCError sends an error to the user of the form
 // {"jsonrpc":"2.0","error":{"code":-32001,"message":"authentication required"},"id":null}
-func writeJSONRPCError(w http.ResponseWriter, r *http.Request, statusCode int, message string) {
+func writeJSONRPCError(
+	w http.ResponseWriter,
+	r *http.Request,
+	readBody []byte,
+	statusCode int,
+	message string,
+) {
 	var reqID json.RawMessage = []byte("null")
-	if r.Body != nil {
+	body := readBody
+	if body == nil && r.Body != nil {
+		if b, readErr := io.ReadAll(io.LimitReader(r.Body, 2<<20)); readErr == nil {
+			_ = r.Body.Close()
+			body = b
+		}
+	}
+	if body != nil {
 		var req struct {
 			ID json.RawMessage `json:"id"`
 		}
-		if body, readErr := io.ReadAll(io.LimitReader(r.Body, 2<<20)); readErr == nil {
-			_ = r.Body.Close()
-			if json.Unmarshal(body, &req) == nil && req.ID != nil {
-				reqID = req.ID
-			}
+		if json.Unmarshal(body, &req) == nil && req.ID != nil {
+			reqID = req.ID
 		}
 	}
 
