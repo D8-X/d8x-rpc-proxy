@@ -3,7 +3,7 @@ name: lint
 on:
   push:
     paths-ignore:
-      - .github/*/*
+      # - .github/*/*
       - README.md
 
 permissions:
