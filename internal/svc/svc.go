@@ -30,8 +30,8 @@ func ConfigFromEnv() (Config, error) {
 		mi, err := strconv.Atoi(m)
 		if err != nil || mi < 0 || mi > 1 {
 			slog.Warn("invalid ENFORCE_MODE, defaulting to strict", "value", m)
-		} else if mi == 0 {
-			mode = models.Log
+		} else {
+			mode = models.EnforceMode(mi)
 		}
 	}
 	slog.Info("proxy mode", "mode", mode.String())
