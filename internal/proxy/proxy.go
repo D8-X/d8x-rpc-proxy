@@ -67,7 +67,7 @@ func New(
 	}
 	return &Proxy{
 		grpc:        grpc,
-		client:      &http.Client{Timeout: 30 * time.Second},
+		client:      &http.Client{Timeout: 8 * time.Second},
 		privyAuth:   pv,
 		rateLimiter: rl,
 		enforceMode: enforceMode,
@@ -118,7 +118,7 @@ func (p *Proxy) HandleRPC(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
 
 	if p.rateLimiter != nil {
@@ -145,14 +145,16 @@ func (p *Proxy) HandleRPC(w http.ResponseWriter, r *http.Request) {
 	var lastUrl string
 
 	for attempts := 0; attempts < maxAttempts; {
-		if r.Context().Err() != nil {
-			http.Error(w, "client canceled", http.StatusServiceUnavailable)
+		if err := ctx.Err(); err != nil {
+			if errors.Is(err, context.DeadlineExceeded) {
+				http.Error(w, "upstream timeout", http.StatusGatewayTimeout)
+			} else {
+				http.Error(w, "client canceled", http.StatusServiceUnavailable)
+			}
 			return
 		}
 
-		getCtx, getCancel := context.WithTimeout(r.Context(), 10*time.Second)
-		_, cleanup, upstreamUrl, err := globalrpc.RpcDial(getCtx, p.grpc, globalrpc.TypeHTTPS)
-		getCancel()
+		_, cleanup, upstreamUrl, err := globalrpc.RpcDial(ctx, p.grpc, globalrpc.TypeHTTPS)
 		if err != nil {
 			slog.Error("failed to get RPC endpoint", "attempt", attempts, "err", err)
 			if lastStatus != 0 {
@@ -174,7 +176,7 @@ func (p *Proxy) HandleRPC(w http.ResponseWriter, r *http.Request) {
 		tried[upstreamUrl] = struct{}{}
 		attempts++
 
-		status, respBody, retry := p.forward(r.Context(), upstreamUrl, body)
+		status, respBody, retry := p.forward(ctx, upstreamUrl, body)
 		cleanup()
 
 		if !retry {
