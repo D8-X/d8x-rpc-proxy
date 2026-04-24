@@ -178,7 +178,6 @@ func (p *Proxy) HandleRPC(w http.ResponseWriter, r *http.Request) {
 		cleanup()
 
 		if !retry {
-			w.Header().Set("X-RPC-Upstream", upstreamUrl)
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(status)
 			_, _ = w.Write(respBody)
@@ -202,7 +201,6 @@ func (p *Proxy) HandleRPC(w http.ResponseWriter, r *http.Request) {
 }
 
 func respondWithLast(w http.ResponseWriter, status int, body []byte, tried map[string]struct{}) {
-	w.Header().Set("X-RPC-Tried", triedList(tried))
 	w.Header().Set("Content-Type", "application/json")
 	if status == 0 {
 		w.WriteHeader(http.StatusBadGateway)
