@@ -145,8 +145,12 @@ func (p *Proxy) HandleRPC(w http.ResponseWriter, r *http.Request) {
 	var lastUrl string
 
 	for attempts := 0; attempts < maxAttempts; {
-		if ctx.Err() != nil {
-			http.Error(w, "client canceled", http.StatusServiceUnavailable)
+		if err := ctx.Err(); err != nil {
+			if errors.Is(err, context.DeadlineExceeded) {
+				http.Error(w, "upstream timeout", http.StatusGatewayTimeout)
+			} else {
+				http.Error(w, "client canceled", http.StatusServiceUnavailable)
+			}
 			return
 		}
 
