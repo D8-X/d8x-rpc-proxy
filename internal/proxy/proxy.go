@@ -154,7 +154,8 @@ func (p *Proxy) HandleRPC(w http.ResponseWriter, r *http.Request) {
 		_, cleanup, upstreamUrl, err := globalrpc.RpcDial(getCtx, p.grpc, globalrpc.TypeHTTPS)
 		getCancel()
 		if err != nil {
-			slog.Error("failed to get RPC endpoint", "attempt", attempts, "err", err)
+			slog.Error("failed to get RPC endpoint",
+				"attempt", attempts, "err", err, "tried", triedList(tried))
 			if lastStatus != 0 {
 				respondWithLast(w, lastStatus, lastBody, tried)
 				return
@@ -178,6 +179,7 @@ func (p *Proxy) HandleRPC(w http.ResponseWriter, r *http.Request) {
 		cleanup()
 
 		if !retry {
+			slog.Debug("forwarded", "url", upstreamUrl, "status", status)
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(status)
 			_, _ = w.Write(respBody)
