@@ -98,3 +98,56 @@ func sanitizeOne(raw json.RawMessage) (canonical, error) {
 	}
 	return c, nil
 }
+
+type canonicalResponse struct {
+	JSONRPC string          `json:"jsonrpc"`
+	Result  json.RawMessage `json:"result,omitempty"`
+	Error   json.RawMessage `json:"error,omitempty"`
+	ID      json.RawMessage `json:"id"`
+}
+
+func SanitizeResponse(body []byte) []byte {
+	trimmed := bytes.TrimSpace(body)
+	if len(trimmed) == 0 {
+		return body
+	}
+	if trimmed[0] == '[' {
+		var batch []json.RawMessage
+		if err := json.Unmarshal(trimmed, &batch); err != nil {
+			return body
+		}
+		out := make([]canonicalResponse, 0, len(batch))
+		for _, raw := range batch {
+			c, err := sanitizeResponseOne(raw)
+			if err != nil {
+				return body
+			}
+			out = append(out, c)
+		}
+		buf, err := json.Marshal(out)
+		if err != nil {
+			return body
+		}
+		return buf
+	}
+	c, err := sanitizeResponseOne(trimmed)
+	if err != nil {
+		return body
+	}
+	buf, err := json.Marshal(c)
+	if err != nil {
+		return body
+	}
+	return buf
+}
+
+func sanitizeResponseOne(raw json.RawMessage) (canonicalResponse, error) {
+	var c canonicalResponse
+	if err := json.Unmarshal(raw, &c); err != nil {
+		return canonicalResponse{}, err
+	}
+	if c.JSONRPC == "" {
+		c.JSONRPC = "2.0"
+	}
+	return c, nil
+}
