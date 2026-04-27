@@ -3,6 +3,7 @@ package methodallowlist
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 )
 
 var allowed = map[string]struct{}{
@@ -24,36 +25,76 @@ var allowed = map[string]struct{}{
 	"eth_feeHistory":            {},
 }
 
-// Check returns true if all methods in body are on the allowlist.
-// Handles both single ({"method":...}) and batch ([{"method":...},...]) requests.
+// canonical is the only JSON-RPC 2.0 envelope shape we forward upstream.
+// Anything else from the client is stripped before forwarding.
 // Malformed bodies are denied.
+type canonical struct {
+	JSONRPC string          `json:"jsonrpc"`
+	Method  string          `json:"method"`
+	Params  json.RawMessage `json:"params,omitempty"`
+	ID      json.RawMessage `json:"id,omitempty"`
+}
+
+// Check returns true if all methods in body are on the allowlist. 
+// Malformed bodies are denied
+// Kept for backwards compat with our callers that don't need the sanitized output
 func Check(body []byte) bool {
+	_, ok := Sanitize(body)
+	return ok
+}
+
+// Sanitize validates the JSON-RPC body and returns a reserialized version
+// containing only the canonical fields 
+// Handles single and batch requests. 
+// Returns (nil, false) for malformed bodies, disallowed methods, or anything other than a JSON-RPC envelope.
+func Sanitize(body []byte) ([]byte, bool) {
 	trimmed := bytes.TrimSpace(body)
 	if len(trimmed) == 0 {
-		return false
+		return nil, false
 	}
 	if trimmed[0] == '[' {
 		var batch []json.RawMessage
-		if err := json.Unmarshal(trimmed, &batch); err != nil {
-			return false
+		if err := json.Unmarshal(trimmed, &batch); err != nil || len(batch) == 0 {
+			return nil, false
 		}
+		out := make([]canonical, 0, len(batch))
 		for _, raw := range batch {
-			if !checkSingle(raw) {
-				return false
+			c, err := sanitizeOne(raw)
+			if err != nil {
+				return nil, false
 			}
+			out = append(out, c)
 		}
-		return true
+		buf, err := json.Marshal(out)
+		if err != nil {
+			return nil, false
+		}
+		return buf, true
 	}
-	return checkSingle(trimmed)
+	c, err := sanitizeOne(trimmed)
+	if err != nil {
+		return nil, false
+	}
+	buf, err := json.Marshal(c)
+	if err != nil {
+		return nil, false
+	}
+	return buf, true
 }
 
-func checkSingle(raw json.RawMessage) bool {
-	var req struct {
-		Method string `json:"method"`
+func sanitizeOne(raw json.RawMessage) (canonical, error) {
+	var c canonical
+	if err := json.Unmarshal(raw, &c); err != nil {
+		return canonical{}, err
 	}
-	if err := json.Unmarshal(raw, &req); err != nil || req.Method == "" {
-		return false
+	if c.Method == "" {
+		return canonical{}, errors.New("missing method")
 	}
-	_, ok := allowed[req.Method]
-	return ok
+	if _, ok := allowed[c.Method]; !ok {
+		return canonical{}, errors.New("method not allowed")
+	}
+	if c.JSONRPC == "" {
+		c.JSONRPC = "2.0"
+	}
+	return c, nil
 }
