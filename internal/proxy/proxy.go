@@ -113,10 +113,12 @@ func (p *Proxy) HandleRPC(w http.ResponseWriter, r *http.Request) {
 	}
 	defer func() { _ = r.Body.Close() }()
 
-	if !methodallowlist.Check(body) {
+	sanitized, ok := methodallowlist.Sanitize(body)
+	if !ok {
 		writeJSONRPCError(w, r, body, http.StatusMethodNotAllowed, JsonRpcErrMethodBlocked, "method not allowed")
 		return
 	}
+	body = sanitized
 
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
