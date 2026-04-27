@@ -245,7 +245,7 @@ func (p *Proxy) forward(parent context.Context, url string, body []byte) (int, [
 
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	respBody = methodallowlist.SanitizeResponse(respBody)
-	
+
 	return resp.StatusCode, respBody, isRetryable(resp.StatusCode)
 }
 

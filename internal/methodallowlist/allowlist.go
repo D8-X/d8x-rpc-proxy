@@ -35,7 +35,7 @@ type canonical struct {
 	ID      json.RawMessage `json:"id,omitempty"`
 }
 
-// Check returns true if all methods in body are on the allowlist. 
+// Check returns true if all methods in body are on the allowlist.
 // Malformed bodies are denied
 // Kept for backwards compat with our callers that don't need the sanitized output
 func Check(body []byte) bool {
@@ -44,8 +44,8 @@ func Check(body []byte) bool {
 }
 
 // Sanitize validates the JSON-RPC body and returns a reserialized version
-// containing only the canonical fields 
-// Handles single and batch requests. 
+// containing only the canonical fields
+// Handles single and batch requests.
 // Returns (nil, false) for malformed bodies, disallowed methods, or anything other than a JSON-RPC envelope.
 func Sanitize(body []byte) ([]byte, bool) {
 	trimmed := bytes.TrimSpace(body)
