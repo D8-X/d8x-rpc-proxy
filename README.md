@@ -74,6 +74,17 @@ The proxy exposes a single endpoint at `POST /rpc`. Send standard Ethereum JSON-
 curl -X POST https://your-proxy-host/rpc \
   -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}'
+
+
 ```
+```
+```
+curl -X POST $URL \
+    -H 'Authorization: Bearer blabla' \
+    -H 'Content-Type: application/json' \
+    -d '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}'
+```
+```
+
 
 A health check is available at `GET /health`.
